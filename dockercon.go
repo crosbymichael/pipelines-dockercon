@@ -13,18 +13,6 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-const (
-	address        = "/run/containerd/containerd.sock"
-	youtubeDLImage = "docker.io/wernight/youtube-dl:latest"
-	ffmpegImage    = "docker.io/jrottenberg/ffmpeg:latest"
-)
-
-func main() {
-	if err := run(); err != nil {
-		logrus.Fatal(err)
-	}
-}
-
 func run() error {
 	client, err := containerd.New(address)
 	if err != nil {
@@ -33,6 +21,7 @@ func run() error {
 	defer client.Close()
 	ctx := namespaces.WithNamespace(context.Background(), "dockercon")
 
+	// pull youtube-dl and ffmpeg images
 	yImage, err := client.Pull(ctx, youtubeDLImage, containerd.WithPullUnpack)
 	if err != nil {
 		return err
@@ -41,7 +30,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
-
+	// create youtube-dl container with networking
 	youtube, err := client.NewContainer(
 		ctx,
 		"youtube",
@@ -56,6 +45,8 @@ func run() error {
 		return err
 	}
 	defer youtube.Delete(ctx, containerd.WithSnapshotCleanup)
+
+	// create ffmpeg container without networking
 	ffmpeg, err := client.NewContainer(
 		ctx,
 		"ffmpeg",
@@ -70,13 +61,12 @@ func run() error {
 	}
 	defer ffmpeg.Delete(ctx, containerd.WithSnapshotCleanup)
 
-	var tasks []containerd.Task
-
 	pipeline, err := newPipeLine(ctx)
 	if err != nil {
 		return err
 	}
-
+	var tasks []containerd.Task
+	// create tasks for the containers with the pipeline
 	dl, err := youtube.NewTask(ctx, pipeline.Left)
 	if err != nil {
 		return err
@@ -89,31 +79,33 @@ func run() error {
 		return err
 	}
 	defer enc.Delete(ctx)
-	tasks = append(tasks, enc)
-	go io.Copy(os.Stdout, pipeline.right.Stdout)
-	go io.Copy(os.Stderr, pipeline.right.Stderr)
-	go io.Copy(os.Stderr, pipeline.left.Stderr)
 
-	gwait, err := enc.Wait(ctx)
+	tasks = append(tasks, enc)
+	// debug because ffmpeg is hard
+	debug(pipeline)
+
+	// wait for tasks before starting
+	encoderW, err := enc.Wait(ctx)
 	if err != nil {
 		return err
 	}
-	lswait, err := dl.Wait(ctx)
+	dlW, err := dl.Wait(ctx)
 	if err != nil {
 		return err
 	}
+	// start the tasks
 	for _, t := range tasks {
 		if err := t.Start(ctx); err != nil {
 			return err
 		}
 	}
-	<-lswait
+	<-dlW
 	pipeline.left.Close()
 	if err := enc.CloseIO(ctx, containerd.WithStdinCloser); err != nil {
-		logrus.WithError(err).Error("close grepio")
+		logrus.WithError(err).Error("close encoder STDIN")
 	}
 
-	<-gwait
+	<-encoderW
 	return nil
 }
 
@@ -154,4 +146,22 @@ func (p *Pipeline) Left(_ string) (cio.IO, error) {
 
 func (p *Pipeline) Right(_ string) (cio.IO, error) {
 	return p.right, nil
+}
+
+const (
+	address        = "/run/containerd/containerd.sock"
+	youtubeDLImage = "docker.io/wernight/youtube-dl:latest"
+	ffmpegImage    = "docker.io/jrottenberg/ffmpeg:latest"
+)
+
+func main() {
+	if err := run(); err != nil {
+		logrus.Fatal(err)
+	}
+}
+
+func debug(pipeline *Pipeline) {
+	go io.Copy(os.Stdout, pipeline.right.Stdout)
+	go io.Copy(os.Stderr, pipeline.right.Stderr)
+	go io.Copy(os.Stderr, pipeline.left.Stderr)
 }
