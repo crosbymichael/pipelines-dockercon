@@ -22,11 +22,7 @@ func run() error {
 	ctx := namespaces.WithNamespace(context.Background(), "dockercon")
 
 	// pull youtube-dl and ffmpeg images
-	yImage, err := client.Pull(ctx, youtubeDLImage, containerd.WithPullUnpack)
-	if err != nil {
-		return err
-	}
-	ffImage, err := client.Pull(ctx, youtubeDLImage, containerd.WithPullUnpack)
+	image, err := client.Pull(ctx, youtubeDLImage, containerd.WithPullUnpack)
 	if err != nil {
 		return err
 	}
@@ -35,11 +31,11 @@ func run() error {
 		ctx,
 		"youtube",
 		containerd.WithNewSpec(
-			oci.WithImageConfig(yImage),
+			oci.WithImageConfig(image),
 			oci.WithHostNamespace(specs.NetworkNamespace), oci.WithHostHostsFile, oci.WithHostResolvconf,
 			oci.WithProcessArgs("youtube-dl", "-o", "-", "https://www.youtube.com/watch?v=evEuft7Jqjs"),
 		),
-		containerd.WithNewSnapshot("youtube", yImage),
+		containerd.WithNewSnapshot("youtube", image),
 	)
 	if err != nil {
 		return err
@@ -51,10 +47,10 @@ func run() error {
 		ctx,
 		"ffmpeg",
 		containerd.WithNewSpec(
-			oci.WithImageConfig(ffImage),
+			oci.WithImageConfig(image),
 			oci.WithProcessArgs("ffmpeg", "-i", "pipe:.mp4", "-f", "mp3", "-b:a", "192K", "-vn", "-"),
 		),
-		containerd.WithNewSnapshot("ffmpeg", ffImage),
+		containerd.WithNewSnapshot("ffmpeg", image),
 	)
 	if err != nil {
 		return err
@@ -149,9 +145,9 @@ func (p *Pipeline) Right(_ string) (cio.IO, error) {
 }
 
 const (
-	address        = "/run/containerd/containerd.sock"
+	address = "/run/containerd/containerd.sock"
+	// youtube dl already has ffmpeg so we can use that for this demo
 	youtubeDLImage = "docker.io/wernight/youtube-dl:latest"
-	ffmpegImage    = "docker.io/jrottenberg/ffmpeg:latest"
 )
 
 func main() {
