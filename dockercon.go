@@ -9,12 +9,14 @@ import (
 	"github.com/containerd/containerd/cio"
 	"github.com/containerd/containerd/namespaces"
 	"github.com/containerd/containerd/oci"
+	specs "github.com/opencontainers/runtime-spec/specs-go"
 	"github.com/sirupsen/logrus"
 )
 
 const (
-	address = "/run/containerd/containerd.sock"
-	alpine  = "docker.io/library/alpine:latest"
+	address        = "/run/containerd/containerd.sock"
+	youtubeDLImage = "docker.io/wernight/youtube-dl:latest"
+	ffmpegImage    = "docker.io/jrottenberg/ffmpeg:latest"
 )
 
 func main() {
@@ -31,36 +33,42 @@ func run() error {
 	defer client.Close()
 	ctx := namespaces.WithNamespace(context.Background(), "dockercon")
 
-	image, err := client.Pull(ctx, alpine, containerd.WithPullUnpack)
+	yImage, err := client.Pull(ctx, youtubeDLImage, containerd.WithPullUnpack)
 	if err != nil {
 		return err
 	}
-	lsContainer, err := client.NewContainer(
+	ffImage, err := client.Pull(ctx, youtubeDLImage, containerd.WithPullUnpack)
+	if err != nil {
+		return err
+	}
+
+	youtube, err := client.NewContainer(
 		ctx,
-		"ls",
+		"youtube",
 		containerd.WithNewSpec(
-			oci.WithImageConfig(image),
-			oci.WithProcessArgs("ls", "-la"),
+			oci.WithImageConfig(yImage),
+			oci.WithHostNamespace(specs.NetworkNamespace), oci.WithHostHostsFile, oci.WithHostResolvconf,
+			oci.WithProcessArgs("youtube-dl", "-o", "-", "https://www.youtube.com/watch?v=YFl2mCHdv24"),
 		),
-		containerd.WithNewSnapshot("ls", image),
+		containerd.WithNewSnapshot("youtube", yImage),
 	)
 	if err != nil {
 		return err
 	}
-	defer lsContainer.Delete(ctx, containerd.WithSnapshotCleanup)
-	grepContainer, err := client.NewContainer(
+	defer youtube.Delete(ctx, containerd.WithSnapshotCleanup)
+	ffmpeg, err := client.NewContainer(
 		ctx,
-		"grep",
+		"ffmpeg",
 		containerd.WithNewSpec(
-			oci.WithImageConfig(image),
-			oci.WithProcessArgs("grep", "bin"),
+			oci.WithImageConfig(ffImage),
+			oci.WithProcessArgs("ffmpeg", "-i", "pipe:.mp4", "-f", "mp3", "-b:a", "192K", "-vn", "-"),
 		),
-		containerd.WithNewSnapshot("grep", image),
+		containerd.WithNewSnapshot("ffmpeg", ffImage),
 	)
 	if err != nil {
 		return err
 	}
-	defer grepContainer.Delete(ctx, containerd.WithSnapshotCleanup)
+	defer ffmpeg.Delete(ctx, containerd.WithSnapshotCleanup)
 
 	var tasks []containerd.Task
 
@@ -69,26 +77,28 @@ func run() error {
 		return err
 	}
 
-	ls, err := lsContainer.NewTask(ctx, pipeline.Left)
+	dl, err := youtube.NewTask(ctx, pipeline.Left)
 	if err != nil {
 		return err
 	}
-	defer ls.Delete(ctx)
-	tasks = append(tasks, ls)
+	defer dl.Delete(ctx)
+	tasks = append(tasks, dl)
 
-	grep, err := grepContainer.NewTask(ctx, pipeline.Right)
+	enc, err := ffmpeg.NewTask(ctx, pipeline.Right)
 	if err != nil {
 		return err
 	}
-	defer grep.Delete(ctx)
-	tasks = append(tasks, grep)
+	defer enc.Delete(ctx)
+	tasks = append(tasks, enc)
 	go io.Copy(os.Stdout, pipeline.right.Stdout)
+	go io.Copy(os.Stderr, pipeline.right.Stderr)
+	go io.Copy(os.Stderr, pipeline.left.Stderr)
 
-	gwait, err := grep.Wait(ctx)
+	gwait, err := enc.Wait(ctx)
 	if err != nil {
 		return err
 	}
-	lswait, err := ls.Wait(ctx)
+	lswait, err := dl.Wait(ctx)
 	if err != nil {
 		return err
 	}
@@ -99,7 +109,7 @@ func run() error {
 	}
 	<-lswait
 	pipeline.left.Close()
-	if err := grep.CloseIO(ctx, containerd.WithStdinCloser); err != nil {
+	if err := enc.CloseIO(ctx, containerd.WithStdinCloser); err != nil {
 		logrus.WithError(err).Error("close grepio")
 	}
 
