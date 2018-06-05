@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"io"
 	"os"
 
 	"github.com/containerd/containerd"
@@ -63,29 +64,25 @@ func run() error {
 
 	var tasks []containerd.Task
 
-	lsPipes, err := cio.NewFIFOSetInDir("/tmp/fifos", "ls", false)
+	pipeline, err := newPipeLine(ctx)
 	if err != nil {
 		return err
 	}
-	lsIO, err := cio.NewDirectIO(ctx, lsPipes)
-	if err != nil {
-		return err
-	}
-	ls, err := lsContainer.NewTask(ctx, func(_ string) (cio.IO, error) {
-		return lsIO, nil
-	})
+
+	ls, err := lsContainer.NewTask(ctx, pipeline.Left)
 	if err != nil {
 		return err
 	}
 	defer ls.Delete(ctx)
 	tasks = append(tasks, ls)
 
-	grep, err := grepContainer.NewTask(ctx, cio.NewCreator(cio.WithStreams(lsIO.Stdout, os.Stdout, os.Stderr)))
+	grep, err := grepContainer.NewTask(ctx, pipeline.Right)
 	if err != nil {
 		return err
 	}
 	defer grep.Delete(ctx)
 	tasks = append(tasks, grep)
+	go io.Copy(os.Stdout, pipeline.right.Stdout)
 
 	gwait, err := grep.Wait(ctx)
 	if err != nil {
@@ -101,7 +98,7 @@ func run() error {
 		}
 	}
 	<-lswait
-	lsIO.Close()
+	pipeline.left.Close()
 	if err := grep.CloseIO(ctx, containerd.WithStdinCloser); err != nil {
 		logrus.WithError(err).Error("close grepio")
 	}
@@ -110,18 +107,41 @@ func run() error {
 	return nil
 }
 
-func newPipeLine() {
-	left * cio.DirectIO
-	right * cio.DirectIO
+func newPipeLine(ctx context.Context) (*Pipeline, error) {
+	lf, err := cio.NewFIFOSetInDir("/tmp/fifos", "left", false)
+	if err != nil {
+		return nil, err
+	}
+	rf, err := cio.NewFIFOSetInDir("/tmp/fifos", "right", false)
+	if err != nil {
+		return nil, err
+	}
+	rf.Stdin = lf.Stdout
+
+	left, err := cio.NewDirectIO(ctx, lf)
+	if err != nil {
+		return nil, err
+	}
+	right, err := cio.NewDirectIO(ctx, rf)
+	if err != nil {
+		return nil, err
+	}
+	right.Stdin.Close()
+	return &Pipeline{
+		left:  left,
+		right: right,
+	}, nil
 }
 
 type Pipeline struct {
+	left  *cio.DirectIO
+	right *cio.DirectIO
 }
 
 func (p *Pipeline) Left(_ string) (cio.IO, error) {
-
+	return p.left, nil
 }
 
 func (p *Pipeline) Right(_ string) (cio.IO, error) {
-
+	return p.right, nil
 }
