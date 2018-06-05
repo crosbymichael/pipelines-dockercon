@@ -48,7 +48,7 @@ func run() error {
 		containerd.WithNewSpec(
 			oci.WithImageConfig(yImage),
 			oci.WithHostNamespace(specs.NetworkNamespace), oci.WithHostHostsFile, oci.WithHostResolvconf,
-			oci.WithProcessArgs("youtube-dl", "-o", "-", "https://www.youtube.com/watch?v=YFl2mCHdv24"),
+			oci.WithProcessArgs("youtube-dl", "-o", "-", "https://www.youtube.com/watch?v=evEuft7Jqjs"),
 		),
 		containerd.WithNewSnapshot("youtube", yImage),
 	)
