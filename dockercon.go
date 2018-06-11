@@ -19,10 +19,11 @@ func run() error {
 		return err
 	}
 	defer client.Close()
+
 	ctx := namespaces.WithNamespace(context.Background(), "dockercon")
 
 	// pull youtube-dl and ffmpeg images
-	image, err := client.Pull(ctx, youtubeDLImage, containerd.WithPullUnpack)
+	image, err := client.Pull(ctx, "docker.io/wernight/youtube-dl:latest", containerd.WithPullUnpack)
 	if err != nil {
 		return err
 	}
@@ -77,6 +78,9 @@ func run() error {
 	defer enc.Delete(ctx)
 
 	tasks = append(tasks, enc)
+	// get our mp3 output, our only io.Copy!
+	go io.Copy(os.Stdout, pipeline.right.Stdout)
+
 	// debug because ffmpeg is hard
 	debug(pipeline)
 
@@ -114,6 +118,7 @@ func newPipeLine(ctx context.Context) (*Pipeline, error) {
 	if err != nil {
 		return nil, err
 	}
+	// magic part
 	rf.Stdin = lf.Stdout
 
 	left, err := cio.NewDirectIO(ctx, lf)
@@ -147,7 +152,6 @@ func (p *Pipeline) Right(_ string) (cio.IO, error) {
 const (
 	address = "/run/containerd/containerd.sock"
 	// youtube dl already has ffmpeg so we can use that for this demo
-	youtubeDLImage = "docker.io/wernight/youtube-dl:latest"
 )
 
 func main() {
@@ -157,7 +161,6 @@ func main() {
 }
 
 func debug(pipeline *Pipeline) {
-	go io.Copy(os.Stdout, pipeline.right.Stdout)
 	go io.Copy(os.Stderr, pipeline.right.Stderr)
 	go io.Copy(os.Stderr, pipeline.left.Stderr)
 }
